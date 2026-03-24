@@ -1139,8 +1139,17 @@ async function executeBuy(pos){
     addTxLog(pos.sym,result.sig,'BUY','pending',ms);
     log('⚡ BUY tx: '+result.sig.slice(0,12)+'... ['+ms+'ms total]');
   }catch(e){
-    txPend=Math.max(0,txPend-1);txFail++;pos.txStatus='failed';
-    log('❌ BUY failed: '+pos.sym+' — '+e.message);
+    txPend=Math.max(0,txPend-1);
+    const msg=e.message||'';
+    const isNoRoute=msg.includes('fetch')||msg.includes('route')||msg.includes('Route')||msg.includes('liquidity');
+    if(isNoRoute){
+      skipped++;
+      log('SKIP '+pos.sym+' — no route (bonding curve)');
+    }else{
+      txFail++;
+      log('BUY failed: '+pos.sym+' — '+msg);
+    }
+    pos.txStatus='failed';
     const idx=positions.indexOf(pos);
     if(idx>-1){positions.splice(idx,1);balance+=pos.size}
   }
