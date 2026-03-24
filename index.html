@@ -1200,8 +1200,26 @@ async function pumpFunBuy(mintAddr,sizeSOL){
     ],
     data:ixData,
   });
+  // Create ATA if it doesn't exist (error 3012 fix)
   var bh=await conn.getLatestBlockhash('confirmed');
   var tx=new solanaWeb3.Transaction({recentBlockhash:bh.blockhash,feePayer:user});
+  var ataInfo=await conn.getAccountInfo(userATA);
+  if(!ataInfo){
+    var createATAIx=new solanaWeb3.TransactionInstruction({
+      programId:new solanaWeb3.PublicKey(ATA_PROG),
+      keys:[
+        {pubkey:user,isSigner:true,isWritable:true},
+        {pubkey:userATA,isSigner:false,isWritable:true},
+        {pubkey:user,isSigner:false,isWritable:false},
+        {pubkey:mint,isSigner:false,isWritable:false},
+        {pubkey:solanaWeb3.SystemProgram.programId,isSigner:false,isWritable:false},
+        {pubkey:new solanaWeb3.PublicKey(TOK_PROG),isSigner:false,isWritable:false},
+        {pubkey:new solanaWeb3.PublicKey(SYS_RENT),isSigner:false,isWritable:false},
+      ],
+      data:new Uint8Array(0),
+    });
+    tx.add(createATAIx);
+  }
   tx.add(ix);
   var signed=await window.solana.signTransaction(tx);
   var sig=await raceRPCs(signed.serialize());
