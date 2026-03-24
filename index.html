@@ -682,6 +682,8 @@ function log(msg){logs.unshift({m:msg,t:performance.now()|0,ts:Date.now()});if(l
 function updateRPCs(){
   const k1=document.getElementById('rpcKey1').value.trim();
   const k2=document.getElementById('rpcKey2').value.trim();
+  if(k1.length>8)try{localStorage.setItem('hk1',k1)}catch{}
+  if(k2.length>8)try{localStorage.setItem('hk2',k2)}catch{}
 
   RPC_POOL=[];
 
@@ -957,6 +959,28 @@ async function submitJitoBundle(serializedTxs){
 // ═══════════════════════════════════════════════════════
 // ⚡ SPEED LAYER 7: FULL OPTIMIZED SWAP EXECUTION
 // ═══════════════════════════════════════════════════════
+
+async function pollAndConfirm(sig){
+  const conn=RPC_POOL[0]&&RPC_POOL[0].conn;
+  if(!conn){txPend=Math.max(0,txPend-1);return;}
+  const deadline=Date.now()+60000;
+  while(Date.now()<deadline){
+    try{
+      const st=await conn.getSignatureStatuses([sig]);
+      const s=st&&st.value&&st.value[0];
+      if(s&&(s.confirmationStatus==='confirmed'||s.confirmationStatus==='finalized')){
+        txPend=Math.max(0,txPend-1);
+        if(s.err){txFail++;updateTxLogStatus(sig,'failed');}
+        else{txConf++;updateTxLogStatus(sig,'confirmed');refreshBalance();log('✅ Confirmed: '+sig.slice(0,12)+'...');}
+        return;
+      }
+    }catch(e){}
+    await new Promise(function(r){setTimeout(r,1500);});
+  }
+  txPend=Math.max(0,txPend-1);
+  txFail++;
+  updateTxLogStatus(sig,'failed');
+}
 async function executeSwapFast(inputMint, outputMint, amount, slipBps, sym){
   const t_total=performance.now();
 
@@ -1006,13 +1030,8 @@ async function executeSwapFast(inputMint, outputMint, amount, slipBps, sym){
     sig=await raceRPCs(serialized);
   }
 
-  // Step 5: Confirm (WebSocket-first, poll fallback)
-  wsConfirm(sig,30000).then(result=>{
-    const err=result?.value?.err||result?.err;
-    if(err){txFail++;updateTxLogStatus(sig,'failed')}
-    else{txConf++;updateTxLogStatus(sig,'confirmed');refreshBalance()}
-    txPend=Math.max(0,txPend-1);
-  }).catch(()=>{txPend=Math.max(0,txPend-1);txFail++;updateTxLogStatus(sig,'failed')});
+  // Step 5: Confirm via polling (reliable)
+  pollAndConfirm(sig);
 
   // Track total speed
   const totalMs=Math.round(performance.now()-t_total);
@@ -1124,95 +1143,58 @@ function toggleDryRun(){
 // BUY / SELL EXECUTION
 // ═══════════════════════════════════════════════════════
 
-// ═══ PUMP.FUN DIRECT BUY (bonding curve on-chain) ═══
-const PUMP_PROG  = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
-const PUMP_FEE_R = 'CebN5WGQ4jvEPvsVU4EoHEpgznyQHeEMZoz5qZzaRFQS';
-const PUMP_EVT   = 'Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1';
-const TOK_PROG   = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
-const ATA_PROG   = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe8bXo';
-const RENT_SYS   = 'SysvarRent111111111111111111111111111111111';
-
-function readU64LE(buf,off){
-  var lo=(buf[off])|(buf[off+1]<<8)|(buf[off+2]<<16)|(buf[off+3]<<24);
-  var hi=(buf[off+4])|(buf[off+5]<<8)|(buf[off+6]<<16)|(buf[off+7]<<24);
-  return (hi>>>0)*0x100000000+(lo>>>0);
-}
-
-function getPDA(seeds,prog){
-  return solanaWeb3.PublicKey.findProgramAddressSync(seeds,new solanaWeb3.PublicKey(prog))[0];
-}
-
-function getATA(mint,owner){
-  return getPDA(
-    [new solanaWeb3.PublicKey(owner).toBytes(),
-     new solanaWeb3.PublicKey(TOK_PROG).toBytes(),
-     new solanaWeb3.PublicKey(mint).toBytes()],
-    ATA_PROG
-  );
-}
-
+const PUMP_PROG='6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
+const PUMP_FEE='CebN5WGQ4jvEPvsVU4EoHEpgznyQHeEMZoz5qZzaRFQS';
+const PUMP_EVT='Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1';
+const TOK_PROG='TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+const ATA_PROG='ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe8bXo';
+const SYS_RENT='SysvarRent111111111111111111111111111111111';
+function readU64LE(b,o){var lo=b[o]|(b[o+1]<<8)|(b[o+2]<<16)|(b[o+3]<<24);var hi=b[o+4]|(b[o+5]<<8)|(b[o+6]<<16)|(b[o+7]<<24);return(hi>>>0)*4294967296+(lo>>>0);}
+function getPDA(seeds,prog){return solanaWeb3.PublicKey.findProgramAddressSync(seeds,new solanaWeb3.PublicKey(prog))[0];}
+function getATA(mint,owner){return getPDA([new solanaWeb3.PublicKey(owner).toBytes(),new solanaWeb3.PublicKey(TOK_PROG).toBytes(),new solanaWeb3.PublicKey(mint).toBytes()],ATA_PROG);}
 async function pumpFunDirectBuy(mintAddr,sizeSOL){
-  const conn=RPC_POOL[0].conn;
-  if(!conn)throw new Error('No RPC connection');
+  const conn=RPC_POOL[0].conn;if(!conn)throw new Error('No RPC');
   const mint=new solanaWeb3.PublicKey(mintAddr);
   const user=new solanaWeb3.PublicKey(phantomPublicKey);
   const prog=new solanaWeb3.PublicKey(PUMP_PROG);
-
-  // Derive accounts
   const global=getPDA([Buffer.from('global')],PUMP_PROG);
-  const bondingCurve=getPDA([Buffer.from('bonding-curve'),mint.toBytes()],PUMP_PROG);
-  const abcATA=getATA(mintAddr,bondingCurve.toString());
+  const bc=getPDA([Buffer.from('bonding-curve'),mint.toBytes()],PUMP_PROG);
+  const abcATA=getATA(mintAddr,bc.toString());
   const userATA=getATA(mintAddr,phantomPublicKey);
-
-  // Read bonding curve to calc token amount
-  const bcInfo=await conn.getAccountInfo(bondingCurve);
-  if(!bcInfo)throw new Error('Bonding curve not found for '+mintAddr.slice(0,8));
+  const bcInfo=await conn.getAccountInfo(bc);
+  if(!bcInfo)throw new Error('No bonding curve for '+mintAddr.slice(0,8));
   const d=bcInfo.data;
-  const vTok=readU64LE(d,8);
-  const vSol=readU64LE(d,16);
-
+  const vTok=readU64LE(d,8);const vSol=readU64LE(d,16);
   const solLam=Math.floor(sizeSOL*1e9);
   const tokAmt=Math.floor((solLam*vTok)/(vSol+solLam));
-  if(tokAmt<=0)throw new Error('Zero token output from bonding curve calc');
-  const maxSol=Math.floor(solLam*1.20); // 20% slippage on bonding curve
-
-  // Build instruction data
+  if(tokAmt<=0)throw new Error('Zero token output');
+  const maxSol=Math.floor(solLam*1.25);
   const disc=Buffer.from([102,6,61,18,1,218,235,234]);
   const aBuf=Buffer.alloc(8);aBuf.writeBigUInt64LE(BigInt(tokAmt));
   const mBuf=Buffer.alloc(8);mBuf.writeBigUInt64LE(BigInt(maxSol));
-  const ixData=Buffer.concat([disc,aBuf,mBuf]);
-
   const ix=new solanaWeb3.TransactionInstruction({
     programId:prog,
     keys:[
-      {pubkey:global,           isSigner:false,isWritable:false},
-      {pubkey:new solanaWeb3.PublicKey(PUMP_FEE_R),isSigner:false,isWritable:true},
-      {pubkey:mint,             isSigner:false,isWritable:false},
-      {pubkey:bondingCurve,     isSigner:false,isWritable:true},
-      {pubkey:abcATA,           isSigner:false,isWritable:true},
-      {pubkey:userATA,          isSigner:false,isWritable:true},
-      {pubkey:user,             isSigner:true, isWritable:true},
+      {pubkey:global,isSigner:false,isWritable:false},
+      {pubkey:new solanaWeb3.PublicKey(PUMP_FEE),isSigner:false,isWritable:true},
+      {pubkey:mint,isSigner:false,isWritable:false},
+      {pubkey:bc,isSigner:false,isWritable:true},
+      {pubkey:abcATA,isSigner:false,isWritable:true},
+      {pubkey:userATA,isSigner:false,isWritable:true},
+      {pubkey:user,isSigner:true,isWritable:true},
       {pubkey:solanaWeb3.SystemProgram.programId,isSigner:false,isWritable:false},
       {pubkey:new solanaWeb3.PublicKey(TOK_PROG),isSigner:false,isWritable:false},
-      {pubkey:new solanaWeb3.PublicKey(RENT_SYS), isSigner:false,isWritable:false},
-      {pubkey:new solanaWeb3.PublicKey(PUMP_EVT), isSigner:false,isWritable:false},
-      {pubkey:prog,             isSigner:false,isWritable:false},
+      {pubkey:new solanaWeb3.PublicKey(SYS_RENT),isSigner:false,isWritable:false},
+      {pubkey:new solanaWeb3.PublicKey(PUMP_EVT),isSigner:false,isWritable:false},
+      {pubkey:prog,isSigner:false,isWritable:false},
     ],
-    data:ixData,
+    data:Buffer.concat([disc,aBuf,mBuf]),
   });
-
-  const {blockhash,lastValidBlockHeight}=await conn.getLatestBlockhash('confirmed');
+  const {blockhash}=await conn.getLatestBlockhash('confirmed');
   const tx=new solanaWeb3.Transaction({recentBlockhash:blockhash,feePayer:user});
   tx.add(ix);
-
   const signed=await window.solana.signTransaction(tx);
   const sig=await raceRPCs(signed.serialize());
-  wsConfirm(sig,30000).then(r=>{
-    const err=r?.value?.err||r?.err;
-    txPend=Math.max(0,txPend-1);
-    if(err){txFail++;updateTxLogStatus(sig,'failed');}
-    else{txConf++;updateTxLogStatus(sig,'confirmed');refreshBalance();}
-  }).catch(()=>{txPend=Math.max(0,txPend-1);txFail++;updateTxLogStatus(sig,'failed');});
   return {sig,tokenAmount:tokAmt};
 }
 
@@ -1224,37 +1206,35 @@ async function executeBuy(pos){
   }
   txPend++;pos.txStatus='pending';
   const t0=performance.now();
+  const lamports=Math.floor(pos.size*1e9);
   try{
-    const lamports=Math.floor(pos.size*1e9);
-    // ── Step 1: Try Jupiter (graduated tokens) ──
+    // Check Jupiter route first
     let jupOK=false;
     try{
-      const qRes=await fetch(JUPITER+'/quote?inputMint='+SOL_MINT+'&outputMint='+pos.mint+'&amount='+lamports+'&slippageBps='+SG.BUY_SLIP);
+      const qRes=await fetch(JUPITER+'/quote?inputMint='+SOL_MINT+'&outputMint='+pos.mint+'&amount='+lamports+'&slippageBps=500');
       if(qRes.ok){const q=await qRes.json();jupOK=!!(q.routePlan&&q.routePlan.length>0&&!q.error);}
     }catch{}
 
-    let result;
+    let sig,outAmt=0;
     if(jupOK){
-      // Graduated token — use Jupiter
-      result=await executeSwapFast(SOL_MINT,pos.mint,lamports,SG.BUY_SLIP,pos.sym);
-      pos.tokenBalanceRaw=result.outAmount;
-      log('🟢 JUP BUY: '+pos.sym);
+      const result=await executeSwapFast(SOL_MINT,pos.mint,lamports,SG.BUY_SLIP,pos.sym);
+      sig=result.sig;outAmt=result.outAmount||0;
+      log('🟢 JUP: '+pos.sym);
     }else{
-      // Bonding curve — buy direct on-chain via pump.fun program
-      result=await pumpFunDirectBuy(pos.mint,pos.size);
-      pos.tokenBalanceRaw=result.tokenAmount||0;
-      log('🟣 PUMP BUY: '+pos.sym);
+      const result=await pumpFunDirectBuy(pos.mint,pos.size);
+      sig=result.sig;outAmt=result.tokenAmount||0;
+      log('🟣 PUMP: '+pos.sym);
     }
-
-    pos.txSig=result.sig;
+    pos.txSig=sig;pos.tokenBalanceRaw=outAmt;
     const ms=Math.round(performance.now()-t0);
-    addTxLog(pos.sym,result.sig,'BUY','pending',ms);
-    log('⚡ BUY tx: '+result.sig.slice(0,12)+'... ['+ms+'ms]');
+    addTxLog(pos.sym,sig,'BUY','pending',ms);
+    log('⚡ tx: '+sig.slice(0,12)+'... ['+ms+'ms]');
+    pollAndConfirm(sig);
   }catch(e){
     txPend=Math.max(0,txPend-1);txFail++;pos.txStatus='failed';
     log('❌ BUY failed: '+pos.sym+' — '+e.message);
     const idx=positions.indexOf(pos);
-    if(idx>-1){positions.splice(idx,1);balance+=pos.size}
+    if(idx>-1){positions.splice(idx,1);balance+=pos.size;}
   }
 }
 async function executeSell(pos,reason){
@@ -1692,6 +1672,13 @@ console.log('⚡ TRENCH COPY TRADER v2.3 LIGHTNING');
 console.log('Speed stack: Multi-RPC Race · Skip Preflight · WS Confirm · Pre-warm Quotes · Jito Bundles');
 
 buildWalletGrid();
+// Restore saved Helius keys
+try{
+  const sk1=localStorage.getItem('hk1');
+  const sk2=localStorage.getItem('hk2');
+  if(sk1){document.getElementById('rpcKey1').value=sk1;}
+  if(sk2){document.getElementById('rpcKey2').value=sk2;}
+}catch{}
 updateRPCs();       // init with public RPCs until keys entered
 connectWS();        // PumpPortal data feed
 setInterval(checkPositions, CFG.CHECK_MS);
