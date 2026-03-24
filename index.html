@@ -720,7 +720,7 @@ function updateRPCs(){
 // ═══════════════════════════════════════════════════════
 async function raceRPCs(serializedTx){
   const t0=performance.now();
-  const b64=Buffer.from(serializedTx).toString('base64');
+  var b64=btoa(String.fromCharCode.apply(null,serializedTx instanceof Uint8Array?serializedTx:new Uint8Array(serializedTx)));
 
   // Send to ALL RPC endpoints simultaneously
   const sends=RPC_POOL.map(async(rpc)=>{
@@ -936,7 +936,7 @@ function toggleJito(){
 async function submitJitoBundle(serializedTxs){
   // Jito expects base58-encoded transactions
   try{
-    const b58Txs=serializedTxs.map(tx=>Buffer.from(tx).toString('base64')); // simplified
+    const b58Txs=serializedTxs.map(function(tx){return btoa(String.fromCharCode.apply(null,tx instanceof Uint8Array?tx:new Uint8Array(tx)));});
     const res=await fetch(JITO_URL,{
       method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -1012,7 +1012,7 @@ async function executeSwapFast(inputMint, outputMint, amount, slipBps, sym){
 
   // Step 3: Deserialize + Sign
   const t_sign=performance.now();
-  const txBuf=Buffer.from(swapData.swapTransaction,'base64');
+  const txBuf=Uint8Array.from(atob(swapData.swapTransaction),function(c){return c.charCodeAt(0);});
   const vTx=solanaWeb3.VersionedTransaction.deserialize(txBuf);
   const signed=await window.solana.signTransaction(vTx);
   latencies.sign=Math.round(performance.now()-t_sign);
@@ -1152,27 +1152,39 @@ const SYS_RENT='SysvarRent111111111111111111111111111111111';
 function readU64LE(b,o){var lo=b[o]|(b[o+1]<<8)|(b[o+2]<<16)|(b[o+3]<<24);var hi=b[o+4]|(b[o+5]<<8)|(b[o+6]<<16)|(b[o+7]<<24);return(hi>>>0)*4294967296+(lo>>>0);}
 function getPDA(seeds,prog){return solanaWeb3.PublicKey.findProgramAddressSync(seeds,new solanaWeb3.PublicKey(prog))[0];}
 function getATA(mint,owner){return getPDA([new solanaWeb3.PublicKey(owner).toBytes(),new solanaWeb3.PublicKey(TOK_PROG).toBytes(),new solanaWeb3.PublicKey(mint).toBytes()],ATA_PROG);}
+function writeU64LE(val){
+  var arr=new Uint8Array(8);
+  var lo=val%4294967296;var hi=Math.floor(val/4294967296);
+  arr[0]=lo&255;arr[1]=(lo>>8)&255;arr[2]=(lo>>16)&255;arr[3]=(lo>>24)&255;
+  arr[4]=hi&255;arr[5]=(hi>>8)&255;arr[6]=(hi>>16)&255;arr[7]=(hi>>24)&255;
+  return arr;
+}
+function concatU8(arrays){
+  var len=arrays.reduce(function(s,a){return s+a.length;},0);
+  var out=new Uint8Array(len);var off=0;
+  arrays.forEach(function(a){out.set(a,off);off+=a.length;});
+  return out;
+}
 async function pumpFunDirectBuy(mintAddr,sizeSOL){
-  const conn=RPC_POOL[0].conn;if(!conn)throw new Error('No RPC');
-  const mint=new solanaWeb3.PublicKey(mintAddr);
-  const user=new solanaWeb3.PublicKey(phantomPublicKey);
-  const prog=new solanaWeb3.PublicKey(PUMP_PROG);
-  const global=getPDA([Buffer.from('global')],PUMP_PROG);
-  const bc=getPDA([Buffer.from('bonding-curve'),mint.toBytes()],PUMP_PROG);
-  const abcATA=getATA(mintAddr,bc.toString());
-  const userATA=getATA(mintAddr,phantomPublicKey);
-  const bcInfo=await conn.getAccountInfo(bc);
-  if(!bcInfo)throw new Error('No bonding curve for '+mintAddr.slice(0,8));
-  const d=bcInfo.data;
-  const vTok=readU64LE(d,8);const vSol=readU64LE(d,16);
-  const solLam=Math.floor(sizeSOL*1e9);
-  const tokAmt=Math.floor((solLam*vTok)/(vSol+solLam));
+  var conn=RPC_POOL[0]&&RPC_POOL[0].conn;if(!conn)throw new Error('No RPC');
+  var mint=new solanaWeb3.PublicKey(mintAddr);
+  var user=new solanaWeb3.PublicKey(phantomPublicKey);
+  var prog=new solanaWeb3.PublicKey(PUMP_PROG);
+  var global=getPDA([new TextEncoder().encode('global')],PUMP_PROG);
+  var bc=getPDA([new TextEncoder().encode('bonding-curve'),mint.toBytes()],PUMP_PROG);
+  var abcATA=getATA(mintAddr,bc.toString());
+  var userATA=getATA(mintAddr,phantomPublicKey);
+  var bcInfo=await conn.getAccountInfo(bc);
+  if(!bcInfo)throw new Error('No bonding curve');
+  var d=bcInfo.data;
+  var vTok=readU64LE(d,8);var vSol=readU64LE(d,16);
+  var solLam=Math.floor(sizeSOL*1e9);
+  var tokAmt=Math.floor((solLam*vTok)/(vSol+solLam));
   if(tokAmt<=0)throw new Error('Zero token output');
-  const maxSol=Math.floor(solLam*1.25);
-  const disc=Buffer.from([102,6,61,18,1,218,235,234]);
-  const aBuf=Buffer.alloc(8);aBuf.writeBigUInt64LE(BigInt(tokAmt));
-  const mBuf=Buffer.alloc(8);mBuf.writeBigUInt64LE(BigInt(maxSol));
-  const ix=new solanaWeb3.TransactionInstruction({
+  var maxSol=Math.floor(solLam*1.25);
+  var disc=new Uint8Array([102,6,61,18,1,218,235,234]);
+  var ixData=concatU8([disc,writeU64LE(tokAmt),writeU64LE(maxSol)]);
+  var ix=new solanaWeb3.TransactionInstruction({
     programId:prog,
     keys:[
       {pubkey:global,isSigner:false,isWritable:false},
@@ -1188,15 +1200,16 @@ async function pumpFunDirectBuy(mintAddr,sizeSOL){
       {pubkey:new solanaWeb3.PublicKey(PUMP_EVT),isSigner:false,isWritable:false},
       {pubkey:prog,isSigner:false,isWritable:false},
     ],
-    data:Buffer.concat([disc,aBuf,mBuf]),
+    data:ixData,
   });
-  const {blockhash}=await conn.getLatestBlockhash('confirmed');
-  const tx=new solanaWeb3.Transaction({recentBlockhash:blockhash,feePayer:user});
+  var bh=await conn.getLatestBlockhash('confirmed');
+  var tx=new solanaWeb3.Transaction({recentBlockhash:bh.blockhash,feePayer:user});
   tx.add(ix);
-  const signed=await window.solana.signTransaction(tx);
-  const sig=await raceRPCs(signed.serialize());
-  return {sig,tokenAmount:tokAmt};
+  var signed=await window.solana.signTransaction(tx);
+  var sig=await raceRPCs(signed.serialize());
+  return {sig:sig,tokenAmount:tokAmt};
 }
+
 
 async function executeBuy(pos){
   if(SG.DRY_RUN){
