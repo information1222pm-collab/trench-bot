@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TRENCH COPY TRADER v2.3 ⚡ LIGHTNING</title>
-<script src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.4/lib/index.iife.min.js"></script>
+<script src="https://unpkg.com/@solana/web3.js@1.95.4/lib/index.iife.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@400;500;600&display=swap');
 *{margin:0;padding:0;box-sizing:border-box}
@@ -1273,7 +1273,6 @@ function attemptCopy(mint,sym,price,w,d){
   if(sOnly&&w.tier!=='S'){skipped++;return}
   if(positions.length>=CFG.MAX_POSITIONS){skipped++;return}
   if(!price||price<=0||!isFinite(price)){skipped++;return}
-  if(price<1e-6){skipped++;log("SKIP "+sym+" bonding curve @"+price.toExponential(1));return}
   const multi=pendingSignals[mint]||new Set();
   const isMulti=multi.size>=2;
   if(multiOnly&&!isMulti){skipped++;return}
@@ -1595,10 +1594,10 @@ log('⚡ TRENCH Copy Trader v2.3 LIGHTNING initialized');
 log('SPEED STACK: Multi-RPC Race · skipPreflight · WS Confirm · Quote Cache · Jito');
 log('1️⃣  Paste Helius key (helius.dev — free) for fastest RPC (~50ms vs ~500ms public)');
 log('2️⃣  Add backup RPC for multi-endpoint racing (redundancy + speed)');
-log('3️⃣  Connect Phantom → quotes auto-prewarm → confirm WS opens');
+lg('3️⃣  Connect Phantom → quotes auto-prewarm → confirm WS opens');
 log('4️⃣  Click 🔥 PREWARM to cache Jupiter quotes before first trade');
 log('5️⃣  Enable ⚡ JITO for MEV-protected bundle submission');
 log('6️⃣  Run DRY RUN, verify latency numbers, then flip LIVE');
-</script>
+</script
 </body>
 </html>
