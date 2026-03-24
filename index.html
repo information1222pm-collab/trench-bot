@@ -1139,17 +1139,8 @@ async function executeBuy(pos){
     addTxLog(pos.sym,result.sig,'BUY','pending',ms);
     log('⚡ BUY tx: '+result.sig.slice(0,12)+'... ['+ms+'ms total]');
   }catch(e){
-    txPend=Math.max(0,txPend-1);
-    const msg=e.message||'';
-    const isNoRoute=msg.includes('fetch')||msg.includes('route')||msg.includes('Route')||msg.includes('liquidity');
-    if(isNoRoute){
-      skipped++;
-      log('SKIP '+pos.sym+' — no route (bonding curve)');
-    }else{
-      txFail++;
-      log('BUY failed: '+pos.sym+' — '+msg);
-    }
-    pos.txStatus='failed';
+    txPend=Math.max(0,txPend-1);txFail++;pos.txStatus='failed';
+    log('❌ BUY failed: '+pos.sym+' — '+e.message);
     const idx=positions.indexOf(pos);
     if(idx>-1){positions.splice(idx,1);balance+=pos.size}
   }
@@ -1282,6 +1273,7 @@ function attemptCopy(mint,sym,price,w,d){
   if(sOnly&&w.tier!=='S'){skipped++;return}
   if(positions.length>=CFG.MAX_POSITIONS){skipped++;return}
   if(!price||price<=0||!isFinite(price)){skipped++;return}
+  if(price<1e-6){skipped++;log("SKIP "+sym+" bonding curve @"+price.toExponential(1));return}
   const multi=pendingSignals[mint]||new Set();
   const isMulti=multi.size>=2;
   if(multiOnly&&!isMulti){skipped++;return}
